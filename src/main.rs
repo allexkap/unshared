@@ -2,10 +2,11 @@ use std::{
     cmp::Reverse,
     collections::HashMap,
     fmt,
-    fs::File,
     hash::Hasher,
     io::{self, Read},
+    mem,
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use clap::Parser;
@@ -50,6 +51,13 @@ impl FileData {
     fn new(info: &FileInfo) -> io::Result<FileData> {
         Ok(FileData {
             size: info.meta.len(),
+            hash: None,
+        })
+    }
+
+    fn with_hash(&self, info: &FileInfo) -> io::Result<FileData> {
+        Ok(FileData {
+            size: self.size,
             hash: Some(hash_file(&info.path)?),
         })
     }
@@ -82,8 +90,35 @@ impl fmt::Display for FileData {
     }
 }
 
+#[derive(Default)]
+struct Files {
+    all_files: HashMap<FileData, Vec<FileInfo>>,
+}
+
+impl Files {
+    fn add(&mut self, info: FileInfo, data: FileData) {
+        let Some(same_files) = self.all_files.get_mut(&data) else {
+            self.all_files.insert(data, vec![info]);
+            return;
+        };
+
+        if data.hash == None {
+            if same_files.len() > 0 {
+                for inner_info in mem::take(same_files) {
+                    let inner_data = data.with_hash(&inner_info).unwrap();
+                    self.add(inner_info, inner_data);
+                }
+            }
+            let data = data.with_hash(&info).unwrap();
+            self.add(info, data);
+        } else {
+            same_files.push(info);
+        }
+    }
+}
+
 fn hash_file<T: AsRef<Path>>(path: &T) -> io::Result<u64> {
-    let mut file = File::open(path)?;
+    let mut file = std::fs::File::open(path)?;
     let mut buf = [0; 4096];
     let mut hasher = SeaHasher::new();
     loop {
@@ -103,27 +138,26 @@ fn process_entry(entry: walkdir::DirEntry) -> io::Result<(FileInfo, FileData)> {
 fn main() {
     let args = Args::parse();
 
-    let mut files: HashMap<FileData, Vec<FileInfo>> = HashMap::new();
+    let t0 = Instant::now();
+
+    let mut files = Files::default();
     for entry in WalkDir::new(args.path).into_iter().filter_map(Result::ok) {
         if !entry.file_type().is_file() {
             continue;
         }
 
         match process_entry(entry) {
-            Ok((info, data)) => {
-                if let Some(v) = files.get_mut(&data) {
-                    v.push(info)
-                } else {
-                    files.insert(data, vec![info]);
-                }
-            }
+            Ok((info, data)) => files.add(info, data),
             Err(err) => println!("{err}"),
         }
     }
 
-    println!("files = {}", files.len());
+    let t1 = Instant::now();
+    println!("{:.3}s", (t1 - t0).as_secs_f64());
+    println!("files = {}", files.all_files.len());
 
-    let mut sorted_files: Vec<(FileData, Vec<FileInfo>)> = files.drain().collect();
+    let mut sorted_files: Vec<(FileData, Vec<FileInfo>)> =
+        files.all_files.drain().filter(|k| k.1.len() > 0).collect();
     sorted_files.sort_by_key(|k| Reverse((k.0.size * k.1.len() as u64, k.0.hash)));
 
     for (data, infos) in sorted_files.into_iter() {
