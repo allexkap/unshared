@@ -2,16 +2,21 @@ use std::{
     cmp::Reverse,
     collections::HashMap,
     fmt,
+    fs::File,
     hash::Hasher,
     io::{self, Read},
     mem,
+    os::{fd::AsRawFd, unix::fs::MetadataExt},
     path::{Path, PathBuf},
     time::Instant,
+    u64,
 };
 
 use clap::Parser;
 use seahash::SeaHasher;
-use walkdir::WalkDir;
+use walkdir::{DirEntryExt, WalkDir};
+
+mod fiemap;
 
 #[derive(Parser)]
 #[command(version)]
@@ -124,12 +129,27 @@ fn hash_file<T: AsRef<Path>>(path: &T) -> io::Result<u64> {
     loop {
         match file.read(&mut buf)? {
             0 => return Ok(hasher.finish()),
-            _ => hasher.write(&buf),
+            n => hasher.write(&buf[..n]),
         }
     }
 }
 
-fn process_entry(entry: walkdir::DirEntry) -> io::Result<(FileInfo, FileData)> {
+fn process_entry(entry: &walkdir::DirEntry) -> io::Result<(FileInfo, FileData)> {
+    let ino = entry.ino();
+    let fe_physical = fiemap::read_fiemap(entry.path(), Some(1))?
+        .1
+        .get(0)
+        .map_or(0, |e| e.fe_physical);
+
+    println!(
+        "{:offset$}{} {} {}",
+        "",
+        ino,
+        fe_physical,
+        entry.file_name().display(),
+        offset = entry.depth() * 2
+    );
+
     let info = FileInfo::new(&entry.path(), entry.metadata()?);
     let data = FileData::new(&info)?;
     return Ok((info, data));
@@ -146,9 +166,9 @@ fn main() {
             continue;
         }
 
-        match process_entry(entry) {
+        match process_entry(&entry) {
             Ok((info, data)) => files.add(info, data),
-            Err(err) => println!("{err}"),
+            Err(err) => println!("{}: {}", entry.path().display(), err),
         }
     }
 
