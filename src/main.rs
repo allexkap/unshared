@@ -16,7 +16,7 @@ fn main() {
 
     let t0 = Instant::now();
 
-    let files = process_dir(&args.path);
+    let files = process_dir(args.path);
 
     let t1 = Instant::now();
     println!("{:.3}s", (t1 - t0).as_secs_f64());
