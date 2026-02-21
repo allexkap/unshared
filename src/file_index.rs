@@ -21,10 +21,15 @@ pub struct MetadataSnapshot {
 
 fn get_ino(value: &fs::Metadata) -> Option<u64> {
     #[cfg(target_os = "linux")]
-    return Some(std::os::unix::fs::MetadataExt::ino(value));
+    {
+        return Some(std::os::unix::fs::MetadataExt::ino(value));
+    }
 
     #[cfg(not(target_os = "linux"))]
-    return None;
+    {
+        let _ = value;
+        return None;
+    }
 }
 
 impl From<fs::Metadata> for MetadataSnapshot {
