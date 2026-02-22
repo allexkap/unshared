@@ -2,8 +2,6 @@ use std::{path::PathBuf, time::Instant};
 
 use clap::Parser;
 
-use rdupl::process_dir;
-
 #[derive(Parser)]
 #[command(version)]
 struct Args {
@@ -19,7 +17,7 @@ fn main() {
 
     let t0 = Instant::now();
 
-    let file_index = process_dir(args.path);
+    let (file_index, root_node) = rdupl::process(args.path);
 
     let t1 = Instant::now();
     println!("{:.3}s", (t1 - t0).as_secs_f64());
@@ -37,4 +35,6 @@ fn main() {
     {
         eprintln!("Error dump to {}: {}", cache_path.display(), err);
     }
+
+    println!("{}", root_node.expect("invalid root node"));
 }
