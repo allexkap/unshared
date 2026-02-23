@@ -1,82 +1,306 @@
-use std::{io, path::Path};
+use std::{
+    cmp,
+    collections::{HashMap, hash_map},
+    fmt, iter,
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
+use enum_as_inner::EnumAsInner;
+use indextree::{Arena, NodeId as ArenaNodeId};
 use tqdm::Iter;
+use walkdir::{DirEntry, WalkDir};
 
-use crate::file_index::{FileData, FileIndex, FileInfo, Node, NodeContent};
+use crate::utils::hash_file;
 
-mod file_index;
 mod utils;
 
-fn process_entry(entry: &walkdir::DirEntry) -> io::Result<(FileInfo, FileData)> {
-    let info = FileInfo::new(entry.path(), entry.metadata()?);
-    let data = FileData::new(&info)?;
-    return Ok((info, data));
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct FileData {
+    size: u64,
+    hash: Option<u64>,
 }
 
-fn skip_file(path: impl AsRef<Path>, err: &std::io::Error) {
-    println!("{}: {}", path.as_ref().display(), err);
-}
+impl fmt::Display for FileData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
+        let mut unit = UNITS[UNITS.len() - 1];
+        let mut size = self.size as f64;
 
-pub fn process(path: impl AsRef<Path>) -> (FileIndex, Option<Node>) {
-    let entries = walkdir::WalkDir::new(path)
-        .sort_by_file_name()
-        .into_iter()
-        .filter_map(|res| match res {
-            Ok(v) => Some(v),
-            Err(e) => {
-                println!("{e}");
-                None
+        for p in UNITS {
+            if size <= 1000.0 {
+                unit = p;
+                break;
             }
-        });
+            size /= 1000.0;
+        }
 
-    let mut file_index = FileIndex::default();
-    let mut dir_stack: Vec<Node> = Vec::new();
-    for entry in entries {
-        let content = if entry.file_type().is_dir() {
-            NodeContent::Dir { nodes: vec![] }
-        } else {
-            match process_entry(&entry) {
-                Ok((info, data)) => {
-                    file_index.fast_add(info.clone(), data);
-                    NodeContent::File { info, data }
-                }
-                Err(err) => {
-                    skip_file(entry.path(), &err);
-                    NodeContent::Other {
-                        text: err.to_string(),
+        let hash_str = match self.hash {
+            Some(hash) => format!("{hash:016x}"),
+            None => "-".to_owned(),
+        };
+
+        write!(
+            f,
+            "FileData({hash_str}: {size:.0$}{unit})",
+            if unit == UNITS[0] { 0 } else { 1 }
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FileNode {
+    modified: Option<SystemTime>,
+    data: FileData,
+}
+
+#[derive(Default, Clone, Copy, Debug)]
+struct DirNode {
+    total_size: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OtherNode;
+
+#[derive(Clone, Copy, Debug, EnumAsInner)]
+enum NodeData {
+    File(FileNode),
+    Dir(DirNode),
+    Other(OtherNode),
+}
+
+#[derive(Clone, Debug)]
+struct Node {
+    name: String,
+    data: NodeData,
+}
+
+type FileArena = Arena<Node>;
+
+#[derive(Clone, Debug)]
+enum FileGroup {
+    Uniq(ArenaNodeId),
+    Many(Vec<ArenaNodeId>),
+}
+
+#[derive(Default, Clone, Debug)]
+struct FileIndex {
+    grouped_files: HashMap<FileData, FileGroup>,
+}
+
+impl FileIndex {
+    fn fast_add(&mut self, node_id: ArenaNodeId, file_data: FileData) {
+        match self.grouped_files.entry(file_data) {
+            hash_map::Entry::Occupied(mut entry) => {
+                let prev_group = entry.get_mut();
+                match prev_group {
+                    FileGroup::Uniq(prev_node_id) => {
+                        *prev_group = FileGroup::Many(vec![*prev_node_id, node_id]);
                     }
+                    FileGroup::Many(file_group) => file_group.push(node_id),
                 }
             }
-        };
-
-        let name = match entry.file_name().to_str() {
-            Some(s) => s.to_owned(),
-            None => {
-                println!("Invalid UTF-8 filename: {:?}", entry.file_name());
-                continue;
+            hash_map::Entry::Vacant(entry) => {
+                entry.insert(FileGroup::Uniq(node_id));
             }
-        };
-
-        let _ = dir_stack.drain(entry.depth()..);
-
-        let node = match dir_stack.last() {
-            Some(parent) => parent.add_child(name, content),
-            None => Node::new_root(name, content),
-        };
-
-        if node.is_dir() {
-            dir_stack.push(node);
         }
     }
 
-    let ambiguous_files = file_index.remove_ambiguous();
-
-    for (info, data) in ambiguous_files.into_iter().tqdm() {
-        match data.with_hash(&info) {
-            Ok(data) => file_index.fast_add(info, data),
-            Err(err) => skip_file(info.path, &err),
-        };
+    fn remove_ambiguous(&mut self) -> Vec<(ArenaNodeId, FileData)> {
+        self.grouped_files
+            .iter_mut()
+            .filter_map(|entry| match entry {
+                (file_data, FileGroup::Many(file_group))
+                    if file_data.hash.is_none() && file_data.size != 0 =>
+                {
+                    Some(file_group.drain(..).zip(iter::repeat(*entry.0)))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect()
     }
 
-    (file_index, dir_stack.into_iter().next())
+    fn get_preview(&self) -> Vec<(FileData, &Vec<ArenaNodeId>)> {
+        let mut sorted_files: Vec<_> = self
+            .grouped_files
+            .iter()
+            .filter_map(|entry| match entry {
+                (data, FileGroup::Many(file_group)) if file_group.len() > 1 => {
+                    Some((*data, file_group))
+                }
+                _ => None,
+            })
+            .collect();
+        sorted_files.sort_by_key(|k| cmp::Reverse((k.0.size * k.1.len() as u64, k.0.hash)));
+        sorted_files
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FileTreeConfig {
+    pub force_hash_size: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FileTree {
+    arena: FileArena,
+    roots: HashMap<ArenaNodeId, PathBuf>,
+    index: FileIndex,
+    config: FileTreeConfig,
+}
+
+impl FileTree {
+    pub fn new(config: FileTreeConfig) -> Self {
+        Self {
+            arena: Arena::new(),
+            roots: HashMap::default(),
+            index: FileIndex::default(),
+            config,
+        }
+    }
+
+    pub fn add_root(&mut self, path: impl AsRef<Path>) {
+        let path = path.as_ref();
+        let entries = WalkDir::new(path)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_map(|res| match res {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    println!("{e}");
+                    None
+                }
+            });
+
+        let mut stack: Vec<ArenaNodeId> = vec![];
+        for entry in entries {
+            stack.truncate(entry.depth());
+
+            let node = self.process_entry(&entry);
+            let node_id = self.arena.new_node(node);
+            if let Some(parent) = stack.last() {
+                parent.append(node_id, &mut self.arena);
+            }
+
+            if let NodeData::File(file_node) = self.arena[node_id].get().data {
+                self.index.fast_add(node_id, file_node.data)
+            }
+
+            stack.push(node_id);
+        }
+
+        let root = stack.into_iter().next().unwrap();
+        self.resolve_size(root);
+        self.roots
+            .insert(root, path.parent().unwrap_or(Path::new("")).to_path_buf());
+
+        let ambiguous_files = self.index.remove_ambiguous();
+
+        for (node_id, data) in ambiguous_files.into_iter().tqdm() {
+            let path = self.get_full_path(node_id);
+            let new_data = FileData {
+                size: data.size,
+                hash: Some(hash_file(path).unwrap()),
+            };
+            let file_node = self.arena[node_id].get_mut().data.as_file_mut().unwrap();
+            file_node.data = new_data;
+            self.index.fast_add(node_id, file_node.data);
+        }
+
+        assert_eq!(self.index.remove_ambiguous().len(), 0);
+    }
+
+    pub fn len(&self) -> usize {
+        self.arena.count()
+    }
+
+    pub fn print_tree(&self) {
+        for (root_id, _) in self.roots.clone() {
+            self.print_subtree(root_id, 0);
+        }
+    }
+
+    pub fn get_preview(&self) -> Vec<(FileData, Vec<PathBuf>)> {
+        self.index
+            .get_preview()
+            .into_iter()
+            .map(|(file_data, nodes)| {
+                (
+                    file_data,
+                    nodes
+                        .iter()
+                        .map(|node_id| self.get_full_path(*node_id))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn process_entry(&self, entry: &DirEntry) -> Node {
+        let name = entry.file_name().to_str().unwrap().to_owned();
+        let data = match entry.file_type() {
+            ft if ft.is_file() => {
+                let meta = entry.metadata().unwrap();
+
+                let size = meta.len();
+                let hash = if self
+                    .config
+                    .force_hash_size
+                    .is_some_and(|x| x >= size && size != 0)
+                {
+                    Some(hash_file(entry.path()).unwrap())
+                } else {
+                    None
+                };
+                let data = FileData { size, hash };
+
+                let modified = meta.modified().ok();
+
+                NodeData::File(FileNode { modified, data })
+            }
+            ft if ft.is_dir() => NodeData::Dir(DirNode::default()),
+            _ => NodeData::Other(OtherNode),
+        };
+        Node { name, data }
+    }
+
+    fn print_subtree(&self, node_id: ArenaNodeId, depth: usize) {
+        println!("{}{:?}", "  ".repeat(depth), self.arena[node_id].get());
+
+        for child in node_id.children(&self.arena) {
+            self.print_subtree(child, depth + 1);
+        }
+    }
+
+    fn resolve_size(&mut self, node_id: ArenaNodeId) -> u64 {
+        match self.arena[node_id].get().data {
+            NodeData::File(file_node) => file_node.data.size,
+            NodeData::Dir(_) => {
+                let total_size = node_id
+                    .children(&self.arena)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|child_id| self.resolve_size(child_id))
+                    .sum();
+                self.arena[node_id]
+                    .get_mut()
+                    .data
+                    .as_dir_mut()
+                    .expect("node type has changed unexpectedly during size resolution")
+                    .total_size = total_size;
+                total_size
+            }
+            NodeData::Other(_) => 0,
+        }
+    }
+
+    fn get_full_path(&self, node_id: ArenaNodeId) -> PathBuf {
+        let node = &self.arena[node_id];
+        match node.parent() {
+            Some(parent_id) => self.get_full_path(parent_id),
+            None => self.roots[&node_id].clone(),
+        }
+        .join(node.get().name.clone())
+    }
 }

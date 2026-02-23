@@ -1,6 +1,7 @@
 use std::{path::PathBuf, time::Instant};
 
 use clap::Parser;
+use rdupl::{FileTree, FileTreeConfig};
 
 #[derive(Parser)]
 #[command(version)]
@@ -15,26 +16,22 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
+    let mut file_tree = FileTree::new(FileTreeConfig {
+        force_hash_size: None,
+    });
+
     let t0 = Instant::now();
 
-    let (file_index, root_node) = rdupl::process(args.path);
+    file_tree.add_root(args.path);
 
     let t1 = Instant::now();
     println!("{:.3}s", (t1 - t0).as_secs_f64());
-    println!("files = {}", file_index.len());
+    println!("nodes = {}", file_tree.len());
 
-    for (data, infos) in file_index.get_preview() {
+    for (data, paths) in file_tree.get_preview() {
         println!("\n{data}");
-        for info in infos {
-            println!("{info}");
+        for path in paths {
+            println!("{}", path.display());
         }
     }
-
-    if let Some(cache_path) = args.cache
-        && let Err(err) = file_index.dump(&cache_path)
-    {
-        eprintln!("Error dump to {}: {}", cache_path.display(), err);
-    }
-
-    println!("{}", root_node.expect("invalid root node"));
 }
