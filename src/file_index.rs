@@ -11,7 +11,7 @@ use indextree::{Arena, NodeId as ArenaNodeId};
 use tqdm::Iter;
 use walkdir::{DirEntry, WalkDir};
 
-use crate::utils::hash_file;
+use self::utils::hash_file;
 
 mod utils;
 

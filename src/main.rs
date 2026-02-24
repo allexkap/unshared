@@ -1,7 +1,10 @@
 use std::{path::PathBuf, time::Instant};
 
 use clap::Parser;
-use rdupl::{FileTree, FileTreeConfig};
+
+use crate::file_index::{FileTree, FileTreeConfig};
+
+mod file_index;
 
 #[derive(Parser)]
 #[command(version)]
@@ -27,6 +30,8 @@ fn main() {
     let t1 = Instant::now();
     println!("{:.3}s", (t1 - t0).as_secs_f64());
     println!("nodes = {}", file_tree.len());
+
+    file_tree.print_tree();
 
     for (data, paths) in file_tree.get_preview() {
         println!("\n{data}");
