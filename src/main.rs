@@ -1,9 +1,14 @@
 use std::{path::PathBuf, time::Instant};
 
 use clap::Parser;
+use color_eyre::Result;
 
-use crate::file_index::{FileTree, FileTreeConfig};
+use crate::{
+    app::App,
+    file_index::{FileTree, FileTreeConfig},
+};
 
+mod app;
 mod file_index;
 
 #[derive(Parser)]
@@ -16,27 +21,27 @@ struct Args {
     path: PathBuf,
 }
 
-fn main() {
+fn main() -> Result<()> {
+    color_eyre::install()?;
+
     let args = Args::parse();
 
-    let mut file_tree = FileTree::new(FileTreeConfig {
+    let path = args.path.canonicalize()?;
+
+    let config = FileTreeConfig {
         force_hash_size: None,
-    });
+    };
+    let mut file_tree = FileTree::new(config);
 
     let t0 = Instant::now();
-
-    file_tree.add_root(args.path);
-
+    file_tree.add_root(path);
     let t1 = Instant::now();
+
     println!("{:.3}s", (t1 - t0).as_secs_f64());
     println!("nodes = {}", file_tree.len());
 
-    file_tree.print_tree();
-
-    for (data, paths) in file_tree.get_preview() {
-        println!("\n{data}");
-        for path in paths {
-            println!("{}", path.display());
-        }
-    }
+    let terminal = ratatui::init();
+    let result = App::new(file_tree).run(terminal);
+    ratatui::restore();
+    result
 }

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{
     cmp,
     collections::{HashMap, hash_map},
@@ -236,6 +238,25 @@ impl FileTree {
                 )
             })
             .collect()
+    }
+
+    pub fn get_roots(&self) -> Vec<(FileTreeNodeId, String)> {
+        self.roots
+            .iter()
+            .map(|(&node_id, path)| (node_id, path.to_string_lossy().into_owned()))
+            .collect()
+    }
+
+    pub fn get_parent(&self, node_id: FileTreeNodeId) -> Option<FileTreeNodeId> {
+        self.arena[node_id].parent()
+    }
+
+    pub fn get_children(&self, node_id: FileTreeNodeId) -> Vec<FileTreeNodeId> {
+        node_id.children(&self.arena).collect()
+    }
+
+    pub fn get_name(&self, node_id: FileTreeNodeId) -> &str {
+        &self.arena[node_id].get().name
     }
 
     fn process_entry(&self, entry: &DirEntry) -> Node {
