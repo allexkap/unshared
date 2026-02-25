@@ -7,7 +7,6 @@ use std::{
 };
 
 use enum_as_inner::EnumAsInner;
-use indextree::{Arena, NodeId as ArenaNodeId};
 use tqdm::Iter;
 use walkdir::{DirEntry, WalkDir};
 
@@ -49,7 +48,7 @@ impl fmt::Display for FileData {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct FileNode {
+struct FileNode {
     modified: Option<SystemTime>,
     data: FileData,
 }
@@ -60,27 +59,27 @@ struct DirNode {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct OtherNode;
+struct TestNode;
 
 #[derive(Clone, Copy, Debug, EnumAsInner)]
-enum NodeData {
+enum NodeKind {
     File(FileNode),
     Dir(DirNode),
-    Other(OtherNode),
+    Test(TestNode),
 }
 
 #[derive(Clone, Debug)]
 struct Node {
     name: String,
-    data: NodeData,
+    kind: NodeKind,
 }
 
-type FileArena = Arena<Node>;
+pub type FileTreeNodeId = indextree::NodeId;
 
 #[derive(Clone, Debug)]
 enum FileGroup {
-    Uniq(ArenaNodeId),
-    Many(Vec<ArenaNodeId>),
+    Uniq(FileTreeNodeId),
+    Many(Vec<FileTreeNodeId>),
 }
 
 #[derive(Default, Clone, Debug)]
@@ -89,7 +88,7 @@ struct FileIndex {
 }
 
 impl FileIndex {
-    fn fast_add(&mut self, node_id: ArenaNodeId, file_data: FileData) {
+    fn fast_add(&mut self, node_id: FileTreeNodeId, file_data: FileData) {
         match self.grouped_files.entry(file_data) {
             hash_map::Entry::Occupied(mut entry) => {
                 let prev_group = entry.get_mut();
@@ -106,7 +105,7 @@ impl FileIndex {
         }
     }
 
-    fn remove_ambiguous(&mut self) -> Vec<(ArenaNodeId, FileData)> {
+    fn remove_ambiguous(&mut self) -> Vec<(FileTreeNodeId, FileData)> {
         self.grouped_files
             .iter_mut()
             .filter_map(|entry| match entry {
@@ -121,7 +120,7 @@ impl FileIndex {
             .collect()
     }
 
-    fn get_preview(&self) -> Vec<(FileData, &Vec<ArenaNodeId>)> {
+    fn get_preview(&self) -> Vec<(FileData, &Vec<FileTreeNodeId>)> {
         let mut sorted_files: Vec<_> = self
             .grouped_files
             .iter()
@@ -137,6 +136,8 @@ impl FileIndex {
     }
 }
 
+type FileTreeArena = indextree::Arena<Node>;
+
 #[derive(Clone, Copy, Debug)]
 pub struct FileTreeConfig {
     pub force_hash_size: Option<u64>,
@@ -144,8 +145,8 @@ pub struct FileTreeConfig {
 
 #[derive(Clone, Debug)]
 pub struct FileTree {
-    arena: FileArena,
-    roots: HashMap<ArenaNodeId, PathBuf>,
+    arena: FileTreeArena,
+    roots: HashMap<FileTreeNodeId, PathBuf>,
     index: FileIndex,
     config: FileTreeConfig,
 }
@@ -153,7 +154,7 @@ pub struct FileTree {
 impl FileTree {
     pub fn new(config: FileTreeConfig) -> Self {
         Self {
-            arena: Arena::new(),
+            arena: FileTreeArena::new(),
             roots: HashMap::default(),
             index: FileIndex::default(),
             config,
@@ -173,7 +174,7 @@ impl FileTree {
                 }
             });
 
-        let mut stack: Vec<ArenaNodeId> = vec![];
+        let mut stack: Vec<FileTreeNodeId> = vec![];
         for entry in entries {
             stack.truncate(entry.depth());
 
@@ -183,7 +184,7 @@ impl FileTree {
                 parent.append(node_id, &mut self.arena);
             }
 
-            if let NodeData::File(file_node) = self.arena[node_id].get().data {
+            if let NodeKind::File(file_node) = self.arena[node_id].get().kind {
                 self.index.fast_add(node_id, file_node.data)
             }
 
@@ -203,7 +204,7 @@ impl FileTree {
                 size: data.size,
                 hash: Some(hash_file(path).unwrap()),
             };
-            let file_node = self.arena[node_id].get_mut().data.as_file_mut().unwrap();
+            let file_node = self.arena[node_id].get_mut().kind.as_file_mut().unwrap();
             file_node.data = new_data;
             self.index.fast_add(node_id, file_node.data);
         }
@@ -239,7 +240,7 @@ impl FileTree {
 
     fn process_entry(&self, entry: &DirEntry) -> Node {
         let name = entry.file_name().to_str().unwrap().to_owned();
-        let data = match entry.file_type() {
+        let kind = match entry.file_type() {
             ft if ft.is_file() => {
                 let meta = entry.metadata().unwrap();
 
@@ -257,15 +258,15 @@ impl FileTree {
 
                 let modified = meta.modified().ok();
 
-                NodeData::File(FileNode { modified, data })
+                NodeKind::File(FileNode { modified, data })
             }
-            ft if ft.is_dir() => NodeData::Dir(DirNode::default()),
-            _ => NodeData::Other(OtherNode),
+            ft if ft.is_dir() => NodeKind::Dir(DirNode::default()),
+            _ => NodeKind::Test(TestNode),
         };
-        Node { name, data }
+        Node { name, kind }
     }
 
-    fn print_subtree(&self, node_id: ArenaNodeId, depth: usize) {
+    fn print_subtree(&self, node_id: FileTreeNodeId, depth: usize) {
         println!("{}{:?}", "  ".repeat(depth), self.arena[node_id].get());
 
         for child in node_id.children(&self.arena) {
@@ -273,10 +274,10 @@ impl FileTree {
         }
     }
 
-    fn resolve_size(&mut self, node_id: ArenaNodeId) -> u64 {
-        match self.arena[node_id].get().data {
-            NodeData::File(file_node) => file_node.data.size,
-            NodeData::Dir(_) => {
+    fn resolve_size(&mut self, node_id: FileTreeNodeId) -> u64 {
+        match self.arena[node_id].get().kind {
+            NodeKind::File(file_node) => file_node.data.size,
+            NodeKind::Dir(_) => {
                 let total_size = node_id
                     .children(&self.arena)
                     .collect::<Vec<_>>()
@@ -285,17 +286,17 @@ impl FileTree {
                     .sum();
                 self.arena[node_id]
                     .get_mut()
-                    .data
+                    .kind
                     .as_dir_mut()
                     .expect("node type has changed unexpectedly during size resolution")
                     .total_size = total_size;
                 total_size
             }
-            NodeData::Other(_) => 0,
+            NodeKind::Test(_) => 0,
         }
     }
 
-    fn get_full_path(&self, node_id: ArenaNodeId) -> PathBuf {
+    fn get_full_path(&self, node_id: FileTreeNodeId) -> PathBuf {
         let node = &self.arena[node_id];
         match node.parent() {
             Some(parent_id) => self.get_full_path(parent_id),
