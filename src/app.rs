@@ -5,21 +5,21 @@ use ratatui::{
     widgets::{HighlightSpacing, List, ListState},
 };
 
-use crate::file_index::{FileTree, FileTreeNodeId};
+use crate::fs_tree::{FsTree, FsTreeNodeId};
 
 #[derive(Debug)]
 pub struct App {
-    file_tree: FileTree,
-    current_node_id: Option<FileTreeNodeId>,
-    list_items: Vec<(FileTreeNodeId, String)>,
+    fs_tree: FsTree,
+    current_node_id: Option<FsTreeNodeId>,
+    list_items: Vec<(FsTreeNodeId, String)>,
     list_state: ListState,
     running: bool,
 }
 
 impl App {
-    pub fn new(file_tree: FileTree) -> Self {
+    pub fn new(fs_tree: FsTree) -> Self {
         Self {
-            file_tree,
+            fs_tree,
             current_node_id: None,
             list_items: Vec::default(),
             list_state: ListState::default(),
@@ -68,7 +68,7 @@ impl App {
             (_, KeyCode::Up) => self.list_state.select_previous(),
             (_, KeyCode::Left) => {
                 if let Some(node_id) = self.current_node_id {
-                    self.current_node_id = self.file_tree.get_parent(node_id);
+                    self.current_node_id = self.fs_tree.get_parent(node_id);
                     self.update_list_items();
                 }
             }
@@ -83,12 +83,12 @@ impl App {
     fn update_list_items(&mut self) {
         self.list_items = match self.current_node_id {
             Some(id) => self
-                .file_tree
+                .fs_tree
                 .get_children(id)
                 .into_iter()
-                .map(|child_id| (child_id, self.file_tree.get_name(child_id).to_owned()))
+                .map(|child_id| (child_id, self.fs_tree.get_name(child_id).to_owned()))
                 .collect(),
-            None => self.file_tree.get_roots(),
+            None => self.fs_tree.get_roots(),
         };
         self.list_state.select_first();
     }

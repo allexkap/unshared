@@ -5,11 +5,11 @@ use color_eyre::Result;
 
 use crate::{
     app::App,
-    file_index::{FileTree, FileTreeConfig},
+    fs_tree::{FsTree, FsTreeConfig},
 };
 
 mod app;
-mod file_index;
+mod fs_tree;
 
 #[derive(Parser)]
 #[command(version)]
@@ -28,20 +28,20 @@ fn main() -> Result<()> {
 
     let path = args.path.canonicalize()?;
 
-    let config = FileTreeConfig {
+    let config = FsTreeConfig {
         force_hash_size: None,
     };
-    let mut file_tree = FileTree::new(config);
+    let mut fs_tree = FsTree::new(config);
 
     let t0 = Instant::now();
-    file_tree.add_root(path);
+    fs_tree.add_root(path);
     let t1 = Instant::now();
 
     println!("{:.3}s", (t1 - t0).as_secs_f64());
-    println!("nodes = {}", file_tree.len());
+    println!("nodes = {}", fs_tree.len());
 
     let terminal = ratatui::init();
-    let result = App::new(file_tree).run(terminal);
+    let result = App::new(fs_tree).run(terminal);
     ratatui::restore();
     result
 }

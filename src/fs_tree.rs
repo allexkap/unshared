@@ -1,162 +1,38 @@
-#![allow(dead_code)]
-
 use std::{
-    cmp,
-    collections::{HashMap, hash_map},
-    fmt, iter,
+    collections::HashMap,
     path::{Path, PathBuf},
-    time::SystemTime,
 };
 
-use enum_as_inner::EnumAsInner;
 use tqdm::Iter;
 use walkdir::{DirEntry, WalkDir};
 
-use self::utils::hash_file;
+use self::{index::FileIndex, nodes::*, utils::hash_file};
 
+mod index;
+mod nodes;
 mod utils;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct FileData {
-    size: u64,
-    hash: Option<u64>,
-}
+type FsTreeArena = indextree::Arena<FsTreeNode>;
 
-impl fmt::Display for FileData {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
-        let mut unit = UNITS[UNITS.len() - 1];
-        let mut size = self.size as f64;
-
-        for p in UNITS {
-            if size <= 1000.0 {
-                unit = p;
-                break;
-            }
-            size /= 1000.0;
-        }
-
-        let hash_str = match self.hash {
-            Some(hash) => format!("{hash:016x}"),
-            None => "-".to_owned(),
-        };
-
-        write!(
-            f,
-            "FileData({hash_str}: {size:.0$}{unit})",
-            if unit == UNITS[0] { 0 } else { 1 }
-        )
-    }
-}
+pub type FsTreeNodeId = indextree::NodeId;
 
 #[derive(Clone, Copy, Debug)]
-struct FileNode {
-    modified: Option<SystemTime>,
-    data: FileData,
-}
-
-#[derive(Default, Clone, Copy, Debug)]
-struct DirNode {
-    total_size: u64,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TestNode;
-
-#[derive(Clone, Copy, Debug, EnumAsInner)]
-enum NodeKind {
-    File(FileNode),
-    Dir(DirNode),
-    Test(TestNode),
-}
-
-#[derive(Clone, Debug)]
-struct Node {
-    name: String,
-    kind: NodeKind,
-}
-
-pub type FileTreeNodeId = indextree::NodeId;
-
-#[derive(Clone, Debug)]
-enum FileGroup {
-    Uniq(FileTreeNodeId),
-    Many(Vec<FileTreeNodeId>),
-}
-
-#[derive(Default, Clone, Debug)]
-struct FileIndex {
-    grouped_files: HashMap<FileData, FileGroup>,
-}
-
-impl FileIndex {
-    fn fast_add(&mut self, node_id: FileTreeNodeId, file_data: FileData) {
-        match self.grouped_files.entry(file_data) {
-            hash_map::Entry::Occupied(mut entry) => {
-                let prev_group = entry.get_mut();
-                match prev_group {
-                    FileGroup::Uniq(prev_node_id) => {
-                        *prev_group = FileGroup::Many(vec![*prev_node_id, node_id]);
-                    }
-                    FileGroup::Many(file_group) => file_group.push(node_id),
-                }
-            }
-            hash_map::Entry::Vacant(entry) => {
-                entry.insert(FileGroup::Uniq(node_id));
-            }
-        }
-    }
-
-    fn remove_ambiguous(&mut self) -> Vec<(FileTreeNodeId, FileData)> {
-        self.grouped_files
-            .iter_mut()
-            .filter_map(|entry| match entry {
-                (file_data, FileGroup::Many(file_group))
-                    if file_data.hash.is_none() && file_data.size != 0 =>
-                {
-                    Some(file_group.drain(..).zip(iter::repeat(*entry.0)))
-                }
-                _ => None,
-            })
-            .flatten()
-            .collect()
-    }
-
-    fn get_preview(&self) -> Vec<(FileData, &Vec<FileTreeNodeId>)> {
-        let mut sorted_files: Vec<_> = self
-            .grouped_files
-            .iter()
-            .filter_map(|entry| match entry {
-                (data, FileGroup::Many(file_group)) if file_group.len() > 1 => {
-                    Some((*data, file_group))
-                }
-                _ => None,
-            })
-            .collect();
-        sorted_files.sort_by_key(|k| cmp::Reverse((k.0.size * k.1.len() as u64, k.0.hash)));
-        sorted_files
-    }
-}
-
-type FileTreeArena = indextree::Arena<Node>;
-
-#[derive(Clone, Copy, Debug)]
-pub struct FileTreeConfig {
+pub struct FsTreeConfig {
     pub force_hash_size: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
-pub struct FileTree {
-    arena: FileTreeArena,
-    roots: HashMap<FileTreeNodeId, PathBuf>,
+pub struct FsTree {
+    arena: FsTreeArena,
+    roots: HashMap<FsTreeNodeId, PathBuf>,
     index: FileIndex,
-    config: FileTreeConfig,
+    config: FsTreeConfig,
 }
 
-impl FileTree {
-    pub fn new(config: FileTreeConfig) -> Self {
+impl FsTree {
+    pub fn new(config: FsTreeConfig) -> Self {
         Self {
-            arena: FileTreeArena::new(),
+            arena: FsTreeArena::new(),
             roots: HashMap::default(),
             index: FileIndex::default(),
             config,
@@ -176,7 +52,7 @@ impl FileTree {
                 }
             });
 
-        let mut stack: Vec<FileTreeNodeId> = vec![];
+        let mut stack: Vec<FsTreeNodeId> = vec![];
         for entry in entries {
             stack.truncate(entry.depth());
 
@@ -240,26 +116,26 @@ impl FileTree {
             .collect()
     }
 
-    pub fn get_roots(&self) -> Vec<(FileTreeNodeId, String)> {
+    pub fn get_roots(&self) -> Vec<(FsTreeNodeId, String)> {
         self.roots
             .iter()
             .map(|(&node_id, path)| (node_id, path.to_string_lossy().into_owned()))
             .collect()
     }
 
-    pub fn get_parent(&self, node_id: FileTreeNodeId) -> Option<FileTreeNodeId> {
+    pub fn get_parent(&self, node_id: FsTreeNodeId) -> Option<FsTreeNodeId> {
         self.arena[node_id].parent()
     }
 
-    pub fn get_children(&self, node_id: FileTreeNodeId) -> Vec<FileTreeNodeId> {
+    pub fn get_children(&self, node_id: FsTreeNodeId) -> Vec<FsTreeNodeId> {
         node_id.children(&self.arena).collect()
     }
 
-    pub fn get_name(&self, node_id: FileTreeNodeId) -> &str {
+    pub fn get_name(&self, node_id: FsTreeNodeId) -> &str {
         &self.arena[node_id].get().name
     }
 
-    fn process_entry(&self, entry: &DirEntry) -> Node {
+    fn process_entry(&self, entry: &DirEntry) -> FsTreeNode {
         let name = entry.file_name().to_str().unwrap().to_owned();
         let kind = match entry.file_type() {
             ft if ft.is_file() => {
@@ -284,10 +160,10 @@ impl FileTree {
             ft if ft.is_dir() => NodeKind::Dir(DirNode::default()),
             _ => NodeKind::Test(TestNode),
         };
-        Node { name, kind }
+        FsTreeNode { name, kind }
     }
 
-    fn print_subtree(&self, node_id: FileTreeNodeId, depth: usize) {
+    fn print_subtree(&self, node_id: FsTreeNodeId, depth: usize) {
         println!("{}{:?}", "  ".repeat(depth), self.arena[node_id].get());
 
         for child in node_id.children(&self.arena) {
@@ -295,7 +171,7 @@ impl FileTree {
         }
     }
 
-    fn resolve_size(&mut self, node_id: FileTreeNodeId) -> u64 {
+    fn resolve_size(&mut self, node_id: FsTreeNodeId) -> u64 {
         match self.arena[node_id].get().kind {
             NodeKind::File(file_node) => file_node.data.size,
             NodeKind::Dir(_) => {
@@ -317,7 +193,7 @@ impl FileTree {
         }
     }
 
-    fn get_full_path(&self, node_id: FileTreeNodeId) -> PathBuf {
+    fn get_full_path(&self, node_id: FsTreeNodeId) -> PathBuf {
         let node = &self.arena[node_id];
         match node.parent() {
             Some(parent_id) => self.get_full_path(parent_id),
