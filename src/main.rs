@@ -10,6 +10,7 @@ use crate::{
 
 mod app;
 mod fs_tree;
+mod utils;
 
 #[derive(Parser)]
 #[command(version)]

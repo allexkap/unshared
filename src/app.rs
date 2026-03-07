@@ -1,5 +1,7 @@
 //! Terminal user interface.
-//!
+
+use std::{cell::RefCell, rc::Rc};
+
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -7,27 +9,30 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::Style,
     text::Line,
-    widgets::Block,
+    widgets::Paragraph,
 };
 
 use crate::{
-    app::fs_tree_panel::{FsTreePanel, FsTreePanelState},
+    app::components::{Component, FsTreePanel},
     fs_tree::FsTree,
 };
 
-mod fs_tree_panel;
+mod components;
+
+const APP_HELP: &'static str = "WARNING: Work in Progress";
 
 pub struct App {
-    panel_state: FsTreePanelState,
-    fs_tree: FsTree,
+    main_panel: FsTreePanel,
+    fs_tree: Rc<RefCell<FsTree>>,
     running: bool,
 }
 
 impl App {
     pub fn new(fs_tree: FsTree) -> Self {
+        let fs_tree_ref = Rc::new(RefCell::new(fs_tree));
         Self {
-            panel_state: FsTreePanelState::new(&fs_tree),
-            fs_tree,
+            main_panel: FsTreePanel::new(fs_tree_ref.clone()),
+            fs_tree: fs_tree_ref.clone(),
             running: false,
         }
     }
@@ -56,7 +61,12 @@ impl App {
 
         frame.render_widget(
             Line::styled(
-                format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+                format!(
+                    "{} v{} ~ {}",
+                    env!("CARGO_PKG_NAME"),
+                    env!("CARGO_PKG_VERSION"),
+                    APP_HELP
+                ),
                 Style::new().reversed(),
             ),
             header,
@@ -64,9 +74,17 @@ impl App {
 
         frame.render_widget(Line::styled("Placeholer", Style::new().reversed()), footer);
 
-        frame.render_stateful_widget(FsTreePanel::default(), left, &mut self.panel_state);
+        self.main_panel.render(frame, left);
 
-        frame.render_widget(Block::bordered(), right);
+        frame.render_widget(
+            Paragraph::new(
+                self.main_panel
+                    .get_selected()
+                    .map(|node_id| format!("{:#?}", self.fs_tree.borrow().get_node(node_id)))
+                    .unwrap_or_default(),
+            ),
+            right,
+        );
     }
 
     fn handle_crossterm_events(&mut self) -> Result<()> {
@@ -83,11 +101,7 @@ impl App {
         match (key.modifiers, key.code) {
             (_, KeyCode::Esc | KeyCode::Char('q'))
             | (KeyModifiers::CONTROL, KeyCode::Char('c') | KeyCode::Char('C')) => self.quit(),
-            (_, KeyCode::Down) => self.panel_state.next(),
-            (_, KeyCode::Up) => self.panel_state.prev(),
-            (_, KeyCode::Left) => self.panel_state.back(&self.fs_tree),
-            (_, KeyCode::Right) => self.panel_state.enter(&self.fs_tree),
-            _ => {}
+            _ => self.main_panel.handle_key_event(key).unwrap(),
         }
     }
 

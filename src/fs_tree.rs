@@ -2,21 +2,22 @@
 
 use std::{
     collections::HashMap,
+    ffi::OsStr,
     path::{Path, PathBuf},
 };
 
 use tqdm::Iter;
 use walkdir::{DirEntry, WalkDir};
 
-use self::{
+use crate::utils::hash_file;
+
+pub use self::{
     index::{FileGroup, FileIndex},
     nodes::*,
-    utils::hash_file,
 };
 
 mod index;
 mod nodes;
-mod utils;
 
 type FsTreeArena = indextree::Arena<FsTreeNode>;
 
@@ -83,7 +84,7 @@ impl FsTree {
         }
 
         let root = stack.into_iter().next().unwrap();
-        self.resolve_size(root);
+        self.resolve(root);
         self.roots
             .insert(root, path.parent().unwrap_or(Path::new("")).to_path_buf());
 
@@ -129,10 +130,10 @@ impl FsTree {
             .collect()
     }
 
-    pub fn get_roots(&self) -> Vec<(FsTreeNodeId, String)> {
+    pub fn get_roots(&self) -> Vec<(FsTreeNodeId, &OsStr)> {
         self.roots
             .iter()
-            .map(|(&node_id, path)| (node_id, path.to_string_lossy().into_owned()))
+            .map(|(&node_id, path)| (node_id, path.as_os_str()))
             .collect()
     }
 
@@ -156,12 +157,8 @@ impl FsTree {
             .and_then(|file_node| self.index.get(file_node.data))
     }
 
-    pub fn get_name(&self, node_id: FsTreeNodeId) -> &str {
-        &self.arena[node_id].get().name
-    }
-
     fn process_entry(&self, entry: &DirEntry) -> FsTreeNode {
-        let name = entry.file_name().to_str().unwrap().to_owned();
+        let name = entry.file_name().to_owned();
         let kind = match entry.file_type() {
             ft if ft.is_file() => {
                 let meta = entry.metadata().unwrap();
@@ -180,7 +177,11 @@ impl FsTree {
 
                 let modified = meta.modified().ok();
 
-                NodeKind::File(FileNode { modified, data })
+                NodeKind::File(FileNode {
+                    modified,
+                    data,
+                    dupes_count: 0,
+                })
             }
             ft if ft.is_dir() => NodeKind::Dir(DirNode::default()),
             _ => NodeKind::Test(TestNode),
@@ -216,6 +217,26 @@ impl FsTree {
             }
             NodeKind::Test(_) => 0,
         }
+    }
+
+    fn resolve(&mut self, node_id: FsTreeNodeId) -> &FsTreeNode {
+        let kind = match self.arena[node_id].get().kind {
+            NodeKind::File(file_node) => NodeKind::File(FileNode {
+                dupes_count: self.index.get(file_node.data).unwrap().len() as u64,
+                ..file_node
+            }),
+            NodeKind::Dir(_) => node_id
+                .children(&self.arena)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|child_id| self.resolve(child_id).kind)
+                .sum::<NodeKind>(),
+            NodeKind::Test(_) => todo!(),
+        };
+
+        let node = self.arena[node_id].get_mut();
+        node.kind = kind;
+        node
     }
 
     pub fn get_full_path(&self, node_id: FsTreeNodeId) -> PathBuf {
