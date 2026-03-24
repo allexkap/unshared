@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use tqdm::Iter;
+use indicatif::ProgressBar;
 use walkdir::{DirEntry, WalkDir};
 
 use crate::utils::hash_file;
@@ -53,7 +53,7 @@ impl FsTree {
         }
     }
 
-    pub fn add_root(&mut self, path: impl AsRef<Path>) {
+    pub fn add_root(&mut self, path: impl AsRef<Path>, progress_bar: ProgressBar) {
         let path = path.as_ref();
         let entries = WalkDir::new(path)
             .sort_by_file_name()
@@ -66,6 +66,8 @@ impl FsTree {
                 }
             });
 
+        progress_bar.set_message("Stage 1: Traversing the file system");
+
         let mut stack: Vec<FsTreeNodeId> = vec![];
         for entry in entries {
             stack.truncate(entry.depth());
@@ -77,7 +79,18 @@ impl FsTree {
             }
 
             if let NodeKind::File(file_node) = self.arena[node_id].get().kind {
-                self.index.fast_add(node_id, file_node.data)
+                match self.index.fast_add(node_id, file_node.data) {
+                    FileGroup::Unique(_) => {
+                        progress_bar.inc_length(1);
+                        progress_bar.inc(1);
+                    }
+                    FileGroup::Duplicates(node_ids) => {
+                        progress_bar.inc_length(1);
+                        if node_ids.len() == 2 {
+                            progress_bar.dec(1);
+                        }
+                    }
+                }
             }
 
             stack.push(node_id);
@@ -90,7 +103,9 @@ impl FsTree {
 
         let ambiguous_files = self.index.remove_ambiguous();
 
-        for (node_id, data) in ambiguous_files.into_iter().tqdm() {
+        progress_bar.set_message("Stage 2: Hashing similar files");
+
+        for (node_id, data) in ambiguous_files.into_iter() {
             let path = self.get_full_path(node_id);
             let new_data = FileData {
                 size: data.size,
@@ -99,7 +114,10 @@ impl FsTree {
             let file_node = self.arena[node_id].get_mut().kind.as_file_mut().unwrap();
             file_node.data = new_data;
             self.index.fast_add(node_id, file_node.data);
+            progress_bar.inc(1);
         }
+
+        progress_bar.finish_and_clear();
 
         assert_eq!(self.index.remove_ambiguous().len(), 0);
     }

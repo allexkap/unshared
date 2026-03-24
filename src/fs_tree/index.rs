@@ -34,7 +34,7 @@ impl FileGroup {
 }
 
 impl FileIndex {
-    pub fn fast_add(&mut self, node_id: FsTreeNodeId, file_data: FileData) {
+    pub fn fast_add(&mut self, node_id: FsTreeNodeId, file_data: FileData) -> &FileGroup {
         match self.grouped_files.entry(file_data) {
             hash_map::Entry::Occupied(mut entry) => {
                 let prev_group = entry.get_mut();
@@ -44,9 +44,10 @@ impl FileIndex {
                     }
                     FileGroup::Duplicates(file_group) => file_group.push(node_id),
                 }
+                entry.into_mut()
             }
             hash_map::Entry::Vacant(entry) => {
-                entry.insert(FileGroup::Unique(node_id));
+                entry.insert(FileGroup::Unique(node_id))
             }
         }
     }
