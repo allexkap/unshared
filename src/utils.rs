@@ -20,17 +20,13 @@ pub fn hash_file(path: impl AsRef<Path>) -> Result<u128> {
     }
 }
 
-pub fn bytes_to_string(value: u64) -> String {
-    const UNITS: [&str; 7] = ["", "k", "M", "G", "T", "P", "E"];
-
-    let mut size = value as f64;
-    let mut unit_idx = 0;
-
-    while size >= 1000.0 && unit_idx < UNITS.len() - 1 {
-        size /= 1000.0;
-        unit_idx += 1;
-    }
-
-    let precision = if size >= 10.0 || unit_idx == 0 { 0 } else { 1 };
-    format!("{size:.precision$}{}", UNITS[unit_idx])
+pub fn use_si_postfix(value: u64) -> String {
+    let shift = value.checked_ilog10().unwrap_or_default() / 3;
+    let shifted_value = (value as f64) / (10_u64.pow(shift * 3) as f64);
+    format!(
+        "{:.p$}{}",
+        shifted_value,
+        ["", "K", "M", "G", "T", "P", "E"][shift as usize],
+        p = (shifted_value < 10.0 && shift != 0) as usize
+    )
 }

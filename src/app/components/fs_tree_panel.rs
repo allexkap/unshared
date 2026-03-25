@@ -4,16 +4,16 @@ use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout},
+    layout::{Constraint, Layout},
     prelude::Rect,
-    style::{Color, Style},
+    style::Color,
     text::{Line, Span},
-    widgets::{Cell, HighlightSpacing, Row, Table, TableState},
+    widgets::{HighlightSpacing, List, ListItem, ListState},
 };
 
 use crate::{
     fs_tree::{FsTree, FsTreeNodeId, NodeKind},
-    utils::bytes_to_string,
+    utils::use_si_postfix,
 };
 
 use super::Component;
@@ -25,16 +25,6 @@ struct FsTreeEntry {
 }
 
 impl FsTreeEntry {
-    const COLUMNS: usize = 6;
-    const WIDTHS: [Constraint; Self::COLUMNS] = [
-        Constraint::Max(4),  // size
-        Constraint::Max(1),  //
-        Constraint::Max(10), // dupes
-        Constraint::Max(1),  //
-        Constraint::Max(1),  // dir
-        Constraint::Fill(1), // name
-    ];
-
     fn new(node_id: FsTreeNodeId, fs_tree: &FsTree) -> Self {
         let node = fs_tree.get_node(node_id);
 
@@ -45,50 +35,56 @@ impl FsTreeEntry {
         }
     }
 
-    fn to_row(&self) -> Row<'_> {
-        let size = bytes_to_string(self.kind.get_total_size());
-        let is_dir = if self.kind.is_dir() { "/" } else { " " };
-        let (uniq, color) = match &self.kind {
-            NodeKind::Dir(dir_node) => (
-                format!("{}/{}", dir_node.unique_files_count, dir_node.files_count),
+    fn to_item(&self) -> ListItem<'_> {
+        let uniq = match &self.kind {
+            NodeKind::Dir(dir_node) => Span::styled(
+                format!(
+                    "{:>4}/{:<4}",
+                    use_si_postfix(dir_node.unique_files_count),
+                    use_si_postfix(dir_node.files_count)
+                ),
                 if dir_node.unique_files_count == dir_node.files_count {
                     Color::Green
                 } else if dir_node.unique_files_count == 0 {
                     Color::Red
                 } else {
-                    Color::Yellow
+                    Color::default()
                 },
             ),
-            NodeKind::File(file_node) => (
-                format!("{}", file_node.copies_count),
+            NodeKind::File(file_node) => Span::styled(
+                format!("    x{:<4}", file_node.copies_count),
                 if file_node.copies_count == 1 {
                     Color::Green
                 } else {
                     Color::Red
                 },
             ),
-            NodeKind::Error(err) => (err.clone(), Color::default()),
+            NodeKind::Error(_) => Span::raw(format!("{:^9}", "-")),
         };
 
-        let cells: [Cell; Self::COLUMNS] = [
-            Line::raw(size).alignment(Alignment::Right).into(),
-            Cell::default(),
-            Line::styled(uniq, Style::default().fg(color))
-                .alignment(Alignment::Right)
-                .into(),
-            Cell::default(),
-            is_dir.into(),
-            self.name.clone().into(),
-        ];
+        let line = Line::from(vec![
+            Span::raw(format!("{:>4}", use_si_postfix(self.kind.get_total_size()))),
+            Span::raw(" "),
+            uniq,
+            Span::raw(" "),
+            Span::raw(if self.kind.is_dir() { "/" } else { " " }),
+            Span::raw(&self.name),
+            Span::raw(
+                self.kind
+                    .as_error()
+                    .map(|e| format!(" ({e})"))
+                    .unwrap_or_default(),
+            ),
+        ]);
 
-        Row::new(cells)
+        ListItem::new(line)
     }
 }
 
 struct FsTreePanelState {
     current: (FsTreeNodeId, String),
     entries: Vec<FsTreeEntry>,
-    widget_state: TableState,
+    list_state: ListState,
 }
 
 impl FsTreePanelState {
@@ -106,22 +102,22 @@ impl FsTreePanelState {
 
         entries.sort_by(|a, b| b.kind.get_uniqueness().total_cmp(&a.kind.get_uniqueness()));
 
-        let mut widget_state = TableState::default();
-        widget_state.select_first();
+        let mut list_state = ListState::default();
+        list_state.select_first();
 
         Self {
             current,
             entries,
-            widget_state,
+            list_state,
         }
     }
 
     fn next(&mut self) {
-        self.widget_state.select_next();
+        self.list_state.select_next();
     }
 
     fn prev(&mut self) {
-        self.widget_state.select_previous();
+        self.list_state.select_previous();
     }
 
     fn enter(&self, fs_tree: &FsTree) -> Option<Self> {
@@ -131,7 +127,7 @@ impl FsTreePanelState {
     }
 
     fn get_selected(&self) -> Option<FsTreeNodeId> {
-        self.widget_state
+        self.list_state
             .selected()
             .map(|pos| self.entries[pos].node_id)
     }
@@ -194,19 +190,10 @@ impl Component for FsTreePanel {
 
         frame.render_widget(Span::raw(header_text), header);
 
-        let rows: Vec<_> = self
-            .state
-            .entries
-            .iter()
-            .map(|entry| entry.to_row())
-            .collect();
-
-        let table = Table::new(rows, FsTreeEntry::WIDTHS)
-            .column_spacing(0)
+        let list = List::new(self.state.entries.iter().map(|entry| entry.to_item()))
             .highlight_symbol("> ")
             .highlight_spacing(HighlightSpacing::Always);
 
-        self.state.widget_state.select_first_column();
-        frame.render_stateful_widget(table, content, &mut self.state.widget_state);
+        frame.render_stateful_widget(list, content, &mut self.state.list_state);
     }
 }

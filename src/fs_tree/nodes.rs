@@ -4,7 +4,7 @@ use std::{ffi::OsString, fmt, time::SystemTime};
 
 use enum_as_inner::EnumAsInner;
 
-use crate::utils::bytes_to_string;
+use crate::utils::use_si_postfix;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct FileData {
@@ -89,7 +89,7 @@ pub struct FsTreeNode {
 
 impl fmt::Display for FileData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let size = bytes_to_string(self.size);
+        let size = use_si_postfix(self.size);
 
         let hash_str = match self.hash {
             Some(hash) => format!("{hash:016x}"),
