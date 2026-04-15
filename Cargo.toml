@@ -1,24 +1,24 @@
 [package]
-name = "unpaired"
-version = "0.2.0"
+name = "unshared"
+version = "0.3.0"
 edition = "2024"
 description = "Terminal utility for finding unique (non-duplicated) files"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/allexkap/unpaired"
+repository = "https://github.com/allexkap/unshared"
 keywords = ["cli", "tui", "filesystem", "unique", "files"]
 categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
-clap = { version = "4.5.50", features = ["derive"] }
+clap = { version = "4.6.0", features = ["derive"] }
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
 enum-as-inner = "0.7.0"
 env_logger = "0.11.10"
-indextree = "4.7.4"
+indextree = "4.8.1"
 indicatif = "0.18.4"
 indicatif-log-bridge = "0.2.3"
 log = "0.4.29"
-nix = { version = "0.31.1", features = ["ioctl"] }
+nix = { version = "0.31.2", features = ["ioctl"] }
 ratatui = "0.30.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
