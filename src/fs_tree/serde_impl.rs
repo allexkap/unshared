@@ -3,6 +3,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use log::warn;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, DeserializeSeed, Visitor},
@@ -21,6 +22,8 @@ enum NodeTag {
     SYMLINK,
     ERROR,
 }
+
+const INVALID_UNICODE_MSG: &str = "was skipped during serialization: Path is not valid Unicode";
 
 impl Serialize for FsTree {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -42,8 +45,8 @@ impl Serialize for FsTree {
                     let child = self.tree.arena[child_id].get();
 
                     let Some(name) = child.name.to_str() else {
-                        eprintln!(
-                            "{:?} was skipped during serialization: the name is not valid Unicode",
+                        warn!(
+                            "{:?} {INVALID_UNICODE_MSG}",
                             self.tree.get_full_path(child_id)
                         );
                         continue;
@@ -82,9 +85,7 @@ impl Serialize for FsTree {
         let mut map = serializer.serialize_map(None)?;
         for (node_id, path) in self.get_roots() {
             let Some(path) = path.to_str() else {
-                eprintln!(
-                    "{path:?} was skipped during serialization: the path is not valid Unicode",
-                );
+                warn!("{path:?} {INVALID_UNICODE_MSG}");
                 continue;
             };
             map.serialize_entry(

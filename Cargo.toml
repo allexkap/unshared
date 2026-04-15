@@ -13,8 +13,11 @@ clap = { version = "4.5.50", features = ["derive"] }
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
 enum-as-inner = "0.7.0"
+env_logger = "0.11.10"
 indextree = "4.7.4"
 indicatif = "0.18.4"
+indicatif-log-bridge = "0.2.3"
+log = "0.4.29"
 nix = { version = "0.31.1", features = ["ioctl"] }
 ratatui = "0.30.0"
 serde = { version = "1.0.228", features = ["derive"] }

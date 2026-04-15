@@ -5,7 +5,9 @@ use std::{
 
 use clap::Parser;
 use color_eyre::Result;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif_log_bridge::LogWrapper;
+use log::info;
 
 use crate::{
     app::App,
@@ -29,6 +31,17 @@ struct Args {
 fn main() -> Result<()> {
     color_eyre::install()?;
 
+    let logger_env = env_logger::Env::default().default_filter_or("warn");
+    let logger = env_logger::Builder::from_env(logger_env)
+        .format_target(false)
+        .format_timestamp(None)
+        .format_indent(Some("[LEVEL] ".len()))
+        .build();
+    let level = logger.filter();
+    let mpb = MultiProgress::new();
+    LogWrapper::new(mpb.clone(), logger).try_init()?;
+    log::set_max_level(level);
+
     let args = Args::parse();
 
     let path = args.path.canonicalize()?;
@@ -38,12 +51,14 @@ fn main() -> Result<()> {
     };
     let mut fs_tree = FsTree::new(config);
 
-    let pb = ProgressBar::new(0).with_style(
-        ProgressStyle::with_template(
-            "{spinner:.green} {msg}\n[{elapsed_precise}] [{bar:40.cyan/blue}] {percent:>2}% ({pos}/{len})",
-        )
-        .unwrap()
-        .progress_chars("##-"),
+    let pb: ProgressBar = mpb.add(
+        ProgressBar::new(0).with_style(
+            ProgressStyle::with_template(concat!(
+                "{spinner:.green} {msg}\n",
+                "[{elapsed_precise}] [{bar:40.cyan/blue}] {percent:>2}% ({pos}/{len})"
+            ))?
+            .progress_chars("##-"),
+        ),
     );
     pb.enable_steady_tick(Duration::from_millis(100));
 
@@ -51,8 +66,8 @@ fn main() -> Result<()> {
     fs_tree.add_root(path, pb).unwrap();
     let t1 = Instant::now();
 
-    println!("{:.3}s", (t1 - t0).as_secs_f64());
-    println!("nodes = {}", fs_tree.len());
+    info!("dt = {:.3}s", (t1 - t0).as_secs_f64());
+    info!("nodes = {}", fs_tree.len());
 
     let terminal = ratatui::init();
     let result = App::new(fs_tree).run(terminal);

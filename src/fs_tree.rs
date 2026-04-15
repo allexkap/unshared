@@ -8,6 +8,7 @@ use std::{
 };
 
 use indicatif::ProgressBar;
+use log::warn;
 use walkdir::{DirEntry, WalkDir};
 
 use crate::utils::hash_file;
@@ -83,11 +84,7 @@ impl FsTree {
                         .expect("WalkDir with follow_links=false return not IO error")
                         .to_string();
 
-                    progress_bar.println(format!(
-                        "{:?}: {}",
-                        self.get_full_path(last_node_id),
-                        err_node
-                    ));
+                    warn!("{:?}: {}", self.get_full_path(last_node_id), err_node);
                     self.arena[last_node_id].get_mut().kind = NodeKind::Error(err_node);
                     continue;
                 }
