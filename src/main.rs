@@ -1,10 +1,11 @@
 use std::{
+    fs,
     path::PathBuf,
     time::{Duration, Instant},
 };
 
 use clap::Parser;
-use color_eyre::Result;
+use color_eyre::{Result, eyre::ContextCompat};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use indicatif_log_bridge::LogWrapper;
 use log::info;
@@ -18,13 +19,23 @@ mod app;
 mod fs_tree;
 mod utils;
 
-#[derive(Parser)]
-#[command(version)]
+#[derive(Parser, Debug)]
+#[command(version, about)]
 struct Args {
-    #[arg(short, long)]
+    /// Path to the cache file with hashes.
+    #[arg(short, long, value_name = "FILE")]
     cache: Option<PathBuf>,
 
-    #[arg(default_value = ".")]
+    /// Use cache data only and skip the filesystem scan.
+    #[arg(short, long, requires = "cache")]
+    fast: bool,
+
+    /// Do not write any changes back to the cache file.
+    #[arg(short, long, requires = "cache")]
+    readonly: bool,
+
+    /// Root directory to scan.
+    #[arg(value_name = "DIR", default_value = ".")]
     path: PathBuf,
 }
 
@@ -44,30 +55,44 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let path = args.path.canonicalize()?;
-
-    let config = FsTreeConfig {
-        force_hash_size: None,
+    let fs_tree_cache = match &args.cache {
+        Some(cache) if cache.exists() => serde_json::from_str(&fs::read_to_string(cache)?)?,
+        _ => None,
     };
-    let mut fs_tree = FsTree::new(config);
 
-    let pb: ProgressBar = mpb.add(
-        ProgressBar::new(0).with_style(
-            ProgressStyle::with_template(concat!(
-                "{spinner:.green} {msg}\n",
-                "[{elapsed_precise}] [{bar:40.cyan/blue}] {percent:>2}% ({pos}/{len})"
-            ))?
-            .progress_chars("##-"),
-        ),
-    );
-    pb.enable_steady_tick(Duration::from_millis(100));
+    let fs_tree = if args.fast {
+        fs_tree_cache.context("Option 'fast' requires option 'cache'")?
+    } else {
+        let path = args.path.canonicalize()?;
 
-    let t0 = Instant::now();
-    fs_tree.add_root(path, pb).unwrap();
-    let t1 = Instant::now();
+        let mut fs_tree = FsTree::new(FsTreeConfig::default());
 
-    info!("dt = {:.3}s", (t1 - t0).as_secs_f64());
-    info!("nodes = {}", fs_tree.len());
+        let pb: ProgressBar = mpb.add(
+            ProgressBar::new(0).with_style(
+                ProgressStyle::with_template(concat!(
+                    "{spinner:.green} {msg}\n",
+                    "[{elapsed_precise}] [{bar:40.cyan/blue}] {percent:>2}% ({pos}/{len})"
+                ))?
+                .progress_chars("##-"),
+            ),
+        );
+        pb.enable_steady_tick(Duration::from_millis(100));
+
+        let t0 = Instant::now();
+        fs_tree.add_root(path, pb).unwrap();
+        let t1 = Instant::now();
+
+        info!("dt = {:.3}s", (t1 - t0).as_secs_f64());
+        info!("nodes = {}", fs_tree.len());
+
+        if let Some(cache) = args.cache
+            && !args.readonly
+        {
+            fs::write(cache, serde_json::to_string(&fs_tree)?)?;
+        }
+
+        fs_tree
+    };
 
     let terminal = ratatui::init();
     let result = App::new(fs_tree).run(terminal);
