@@ -1,5 +1,7 @@
 use std::{
+    ffi::OsStr,
     fmt,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -83,7 +85,8 @@ impl Serialize for FsTree {
         }
 
         let mut map = serializer.serialize_map(None)?;
-        for (node_id, path) in self.get_roots() {
+        for (node_id, root_path) in self.get_roots() {
+            let path = root_path.join(self.get_node(node_id).name.clone());
             let Some(path) = path.to_str() else {
                 warn!("{path:?} {INVALID_UNICODE_MSG}");
                 continue;
@@ -120,7 +123,7 @@ impl<'de> Deserialize<'de> for FsTree {
             {
                 struct FsTreeCtx<'a> {
                     fs_tree: &'a mut FsTree,
-                    name: String,
+                    name: &'a OsStr,
                 }
 
                 impl<'de, 'a> Visitor<'de> for FsTreeCtx<'a> {
@@ -142,7 +145,7 @@ impl<'de> Deserialize<'de> for FsTree {
                         while let Some(name) = map.next_key::<String>()? {
                             let child_id = map.next_value_seed(FsTreeCtx {
                                 fs_tree: self.fs_tree,
-                                name,
+                                name: OsStr::new(&name),
                             })?;
                             node_id.append(child_id, &mut self.fs_tree.arena);
                         }
@@ -221,12 +224,22 @@ impl<'de> Deserialize<'de> for FsTree {
                 }
 
                 let mut fs_tree = FsTree::new(FsTreeConfig::default());
-                while let Some(name) = map.next_key::<String>()? {
+                while let Some(key) = map.next_key::<String>()? {
+                    let path = PathBuf::from(&key);
+
+                    let (root_path, name) = match (path.parent(), path.file_name()) {
+                        (Some(parent), Some(name)) => (parent, name),
+                        (None, _) if path.has_root() => (Path::new(""), OsStr::new("/")),
+                        _ => {
+                            return Err(de::Error::invalid_value(de::Unexpected::Str(&key), &self));
+                        }
+                    };
+
                     let node_id = map.next_value_seed(FsTreeCtx {
                         fs_tree: &mut fs_tree,
-                        name: name.clone(),
+                        name,
                     })?;
-                    fs_tree.roots.insert(node_id, name.into());
+                    fs_tree.roots.insert(node_id, root_path.to_path_buf());
                 }
 
                 fs_tree.resolve_roots();

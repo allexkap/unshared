@@ -66,7 +66,7 @@ impl FsTree {
         progress_bar.set_message("Stage 1: Traversing the file system");
 
         let mut stack: Vec<FsTreeNodeId> = vec![];
-        for entry in WalkDir::new(&root_path).sort_by_file_name() {
+        for entry in WalkDir::new(&root_path).sort_by_file_name().max_depth(1) {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(err) => {
@@ -105,7 +105,10 @@ impl FsTree {
             } else {
                 self.roots.insert(
                     node_id,
-                    root_path.parent().unwrap_or(&root_path).to_path_buf(),
+                    root_path
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or(PathBuf::default()),
                 );
             }
 
@@ -159,10 +162,10 @@ impl FsTree {
         self.arena.count()
     }
 
-    pub fn get_roots(&self) -> Vec<(FsTreeNodeId, &OsStr)> {
+    pub fn get_roots(&self) -> Vec<(FsTreeNodeId, &PathBuf)> {
         self.roots
             .iter()
-            .map(|(&node_id, path)| (node_id, path.as_os_str()))
+            .map(|(&node_id, path)| (node_id, path))
             .collect()
     }
 
