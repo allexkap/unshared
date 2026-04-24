@@ -2,9 +2,9 @@
 
 use std::{
     collections::HashMap,
-    ffi::OsStr,
     fs, io,
     path::{Path, PathBuf},
+    time::UNIX_EPOCH,
 };
 
 use indicatif::ProgressBar;
@@ -27,10 +27,12 @@ type FsTreeArena = indextree::Arena<FsTreeNode>;
 pub type FsTreeNodeId = indextree::NodeId;
 
 /// Configuration for building an [`FsTree`].
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Debug)]
 pub struct FsTreeConfig {
     /// Force hashing for files up to this size.
     pub force_hash_size: Option<u64>,
+    /// FsTree instance used as a hash cache.
+    pub cache_tree: Option<Box<FsTree>>,
 }
 
 /// In-memory filesystem tree with duplicate index.
@@ -66,7 +68,7 @@ impl FsTree {
         progress_bar.set_message("Stage 1: Traversing the file system");
 
         let mut stack: Vec<FsTreeNodeId> = vec![];
-        for entry in WalkDir::new(&root_path).sort_by_file_name().max_depth(1) {
+        for entry in WalkDir::new(&root_path).sort_by_file_name() {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(err) => {
@@ -158,10 +160,6 @@ impl FsTree {
         Ok(())
     }
 
-    pub fn len(&self) -> usize {
-        self.arena.count()
-    }
-
     pub fn get_roots(&self) -> Vec<(FsTreeNodeId, &PathBuf)> {
         self.roots
             .iter()
@@ -195,7 +193,22 @@ impl FsTree {
                 let meta = entry.metadata()?;
 
                 let size = meta.len();
-                let hash = if self
+                let modified = meta
+                    .modified()
+                    .ok()
+                    .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
+
+                let cached = self.get_file_node_from_cache(entry.path()).and_then(|f| {
+                    f.data.hash.filter(|_| match (modified, f.modified) {
+                        (Some(m0), Some(m1)) => m0 <= m1,
+                        (None, _) => true,
+                        _ => false,
+                    })
+                });
+                let hash = if let Some(h) = cached {
+                    Some(h)
+                } else if self
                     .config
                     .force_hash_size
                     .is_some_and(|x| x >= size && size != 0)
@@ -204,9 +217,8 @@ impl FsTree {
                 } else {
                     None
                 };
-                let data = FileData { size, hash };
 
-                let modified = meta.modified().ok();
+                let data = FileData { size, hash };
 
                 Ok(NodeKind::File(FileNode {
                     modified,
@@ -264,5 +276,47 @@ impl FsTree {
             None => self.roots[&node_id].clone(),
         }
         .join(node.get().name.clone())
+    }
+
+    pub fn get_node_by_path(&self, node_path: &Path) -> Option<FsTreeNodeId> {
+        let Some((mut id, path)) = self
+            .roots
+            .iter()
+            .filter_map(|(&id, root_path)| {
+                Some((
+                    id,
+                    node_path
+                        .strip_prefix(root_path.join(self.get_node(id).name.as_os_str()))
+                        .ok()?,
+                ))
+            })
+            .next()
+        else {
+            return None;
+        };
+
+        for part in path.components() {
+            match self
+                .get_children(id)
+                .iter()
+                .filter(|&&child_id| self.get_node(child_id).name == part.as_os_str())
+                .next()
+            {
+                Some(&child_id) => id = child_id,
+                None => {
+                    return None;
+                }
+            }
+        }
+
+        Some(id)
+    }
+
+    fn get_file_node_from_cache(&self, path: &Path) -> Option<&FileNode> {
+        self.config
+            .cache_tree
+            .as_ref()
+            .and_then(|cache| Some((cache, cache.get_node_by_path(path)?)))
+            .and_then(|(cache, id)| cache.get_node(id).kind.as_file())
     }
 }

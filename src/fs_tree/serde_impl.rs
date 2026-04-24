@@ -2,7 +2,6 @@ use std::{
     ffi::OsStr,
     fmt,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use log::warn;
@@ -67,9 +66,7 @@ impl Serialize for FsTree {
                         NodeKind::File(file_node) => {
                             let size = file_node.data.size;
                             let hash = file_node.data.hash;
-                            let modified = file_node.modified.and_then(|m| {
-                                m.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs())
-                            });
+                            let modified = file_node.modified;
                             map.serialize_entry(&name, &(NodeTag::FILE, size, hash, modified))?;
                         }
                         NodeKind::SymLink(data) => {
@@ -168,12 +165,9 @@ impl<'de> Deserialize<'de> for FsTree {
                                 let hash = seq
                                     .next_element()?
                                     .ok_or_else(|| de::Error::missing_field("file hash"))?;
-                                let secs = seq
+                                let modified = seq
                                     .next_element()?
                                     .ok_or_else(|| de::Error::missing_field("file timestamp"))?;
-
-                                let modified =
-                                    Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs));
 
                                 let data = FileData { size, hash };
                                 NodeKind::File(FileNode {

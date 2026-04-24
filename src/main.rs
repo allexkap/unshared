@@ -1,14 +1,9 @@
-use std::{
-    fs,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::{fs, path::PathBuf, time::Duration};
 
 use clap::Parser;
-use color_eyre::{Result, eyre::ContextCompat};
+use color_eyre::Result;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use indicatif_log_bridge::LogWrapper;
-use log::info;
 
 use crate::{
     app::App,
@@ -56,16 +51,20 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     let fs_tree_cache = match &args.cache {
-        Some(cache) if cache.exists() => serde_json::from_str(&fs::read_to_string(cache)?)?,
+        Some(cache) if args.fast || cache.exists() => {
+            serde_json::from_str(&fs::read_to_string(cache)?)?
+        }
         _ => None,
     };
 
     let fs_tree = if args.fast {
-        fs_tree_cache.context("Option 'fast' requires option 'cache'")?
+        fs_tree_cache.unwrap()
     } else {
-        let path = args.path.canonicalize()?;
-
-        let mut fs_tree = FsTree::new(FsTreeConfig::default());
+        let fs_tree_config = FsTreeConfig {
+            force_hash_size: None,
+            cache_tree: fs_tree_cache.map(Box::new),
+        };
+        let mut fs_tree = FsTree::new(fs_tree_config);
 
         let pb: ProgressBar = mpb.add(
             ProgressBar::new(0).with_style(
@@ -78,12 +77,9 @@ fn main() -> Result<()> {
         );
         pb.enable_steady_tick(Duration::from_millis(100));
 
-        let t0 = Instant::now();
-        fs_tree.add_root(path, pb).unwrap();
-        let t1 = Instant::now();
+        let path = args.path.canonicalize()?;
 
-        info!("dt = {:.3}s", (t1 - t0).as_secs_f64());
-        info!("nodes = {}", fs_tree.len());
+        fs_tree.add_root(path, pb)?;
 
         if let Some(cache) = args.cache
             && !args.readonly

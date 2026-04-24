@@ -1,6 +1,6 @@
 //! Filesystem node types and related data structures.
 
-use std::{ffi::OsString, fmt, time::SystemTime};
+use std::{ffi::OsString, fmt};
 
 use enum_as_inner::EnumAsInner;
 
@@ -15,7 +15,7 @@ pub struct FileData {
 #[derive(Clone, Copy, Debug)]
 pub struct FileNode {
     pub data: FileData,
-    pub modified: Option<SystemTime>,
+    pub modified: Option<u64>,
     pub copies_count: u64,
 }
 
